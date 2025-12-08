@@ -1,17 +1,19 @@
+import sys, pathlib; sys.path.append(str(pathlib.Path(__file__).parent / "IDyOM"))  # moves interpreter to the IDyOM folder
+
 from idyom import idyom, data
 from App import Train, SurpriseOverFolder, cross_validation
 import mido
 import collections
 import numpy as np
 
-train_path = "trainingFolder/"
-eval_path = "testFolder/"
+train_path = "IDyOM/trainingFolder/"
+eval_path = "IDyOM/testFolder/"
 
 quantization = 24
 maxOrder = 20
 viewPoints = ["pitch", "length"]
 
-midiFile = "stimuli/eLife/audio1.mid"
+midiFile = "IDyOM/stimuli/eLife/audio1.mid"
 
 # 1. Train the model
 Train(
