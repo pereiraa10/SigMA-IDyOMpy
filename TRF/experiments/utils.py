@@ -180,6 +180,21 @@ def load_subject_raw_eeg(filepath, subject, trial_to_stimulus=None):
 # this does not change any numeric EEG/feature/TRF output.
 _EEGLAB_UNIT_SPHERE_HEAD_RADIUS_M = 0.095
 
+# liberi_dataset's CND .mat chanlocs.labels also store some channels as
+# "<10-10 name> (<legacy 10-20 name>)" (e.g. "T7 (T3)", "Iz (inion)") and one
+# with non-standard casing ("Afz"), none of which match eelbrain/MNE's
+# standard montage channel names ("T7", "Iz", "AFz") -- results.py's
+# _build_sensor matches meta['channel_names'] against _CANDIDATE_MONTAGES by
+# exact string, so these raw labels fail that lookup. Clean them here, at the
+# .mat-specific source, since the .edf/.fif loaders below already produce
+# standard-montage names directly.
+_LABEL_CASE_FIXES = {'Afz': 'AFz'}
+
+
+def _clean_channel_label(label):
+    label = label.split(' (')[0]
+    return _LABEL_CASE_FIXES.get(label, label)
+
 
 def _load_eeg_from_mat(filepath, subject):
     """Load raw EEG from a CNSP-style .mat file at its original sampling
@@ -202,7 +217,7 @@ def _load_eeg_from_mat(filepath, subject):
     # direction cosines onto a plausible head radius in metres.
     r = _EEGLAB_UNIT_SPHERE_HEAD_RADIUS_M
     chanlocs = [
-        SimpleNamespace(labels=c.labels, X=c.X * r, Y=c.Y * r, Z=c.Z * r)
+        SimpleNamespace(labels=_clean_channel_label(c.labels), X=c.X * r, Y=c.Y * r, Z=c.Z * r)
         for c in eeg.chanlocs
     ]
 
@@ -524,6 +539,11 @@ def preprocess_eeg_trials(eeg_data, target_fs, lpf_hz, hpf_hz, debug=False, capt
         if debug:
             print(f"  [pre] Trial {i+1}: raw = {trial_f64.shape[0]} samples "
                   f"@ {orig_fs} Hz  (pad = {pad_start_orig} samples)")
+
+
+# forward backward filtering - first causal, the time reverse and filter again and results in 0 - phase filter 
+# ends with square of frequency response 
+# double check why you do the LP - resample - HP
 
         trial_lpf = sosfiltfilt(lpf_sos, trial_f64, axis=0)
         trial_down = resample_poly(trial_lpf, up, down_factor, axis=0)
@@ -941,10 +961,17 @@ def build_trials(events, feature_names, subject):
     return trials, sensor_dim, channel_names, n_channels
 
 
-def zscore_trials(trials, feature_keys, subject, debug=False):
+def zscore_trials(trials, feature_keys, subject, debug=False, nonzero_frac_threshold=0.75):
     """Per-trial z-score the EEG and the `feature_keys` of each trial dict,
     with boundary checks. Returns a new list of per-trial dicts holding
-    {'eeg': (T,n_ch), <feature_key>: (T,), ...}, all z-scored.
+    {'eeg': (T,n_ch), <feature_key>: (T,), ...}.
+
+    A feature is only z-scored if more than `nonzero_frac_threshold` of its
+    values are non-zero for that trial. Sparse impulse-like features (e.g.
+    pitch_surprisal, pitch_entropy, onset_surprisal, onset_entropy — mostly
+    zero with occasional spikes) fail this check and are passed through
+    unscaled instead: z-scoring a mostly-zero signal shifts/skews the bulk of
+    its mass rather than normalizing it. The EEG itself is always z-scored.
 
     Standalone version of the former Dataset.get_trials body. Keeps all three
     checks exactly: 2-D EEG, per-feature length match, post-zscore finiteness.
@@ -966,10 +993,13 @@ def zscore_trials(trials, feature_keys, subject, debug=False):
                     f"{t[k].shape[0]} timepoints but EEG has {n_time} "
                     f"(feature shape {t[k].shape}, EEG shape {t['eeg'].shape})."
                 )
-
+        # z-score the EEG first and save in zt dict, then add entry to this dict for every
+        # feature key present in feature_keys provided with the z-scored feature -- unless
+        # the feature is too sparse (mostly zeros), in which case it's passed through as-is.
         zt = {'eeg': zscore(t['eeg'])}
         for k in feature_keys:
-            zt[k] = zscore(t[k])
+            nonzero_frac = np.count_nonzero(t[k]) / t[k].shape[0]
+            zt[k] = zscore(t[k]) if nonzero_frac > nonzero_frac_threshold else t[k]
 
         # Guard against non-finite values introduced by z-scoring: a
         # constant-variance channel (e.g. a dead electrode) divides by a

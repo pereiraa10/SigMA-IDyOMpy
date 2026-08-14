@@ -21,6 +21,21 @@ from sklearn.model_selection import KFold
 # ================================
 # Load EEG data
 # ================================
+# The diliBach (Dryad CND) .mat chanlocs.labels store some channels as
+# "<10-10 name> (<legacy 10-20 name>)" (e.g. "T7 (T3)", "Iz (inion)") and one
+# with non-standard casing ("Afz"), none of which match eelbrain/MNE's
+# standard montage channel names ("T7", "Iz", "AFz"). Strip the parenthetical
+# alias and fix known casing here, once, so every channel_names list saved
+# downstream (results.py's _build_sensor montage lookup) matches biosemi64
+# directly.
+_LABEL_CASE_FIXES = {'Afz': 'AFz'}
+
+
+def _clean_channel_label(label):
+    label = label.split(' (')[0]
+    return _LABEL_CASE_FIXES.get(label, label)
+
+
 def load_subject_raw_eeg(filepath, subject):
     """
     Load raw EEG at its original sampling frequency — NO resampling.
@@ -168,7 +183,7 @@ def create_mne_raw_from_preprocessed(preprocessed_trials, target_fs, chanlocs):
     ch_names  = []
     positions = []
     for ch in chanlocs:
-        ch_names.append(ch.labels)
+        ch_names.append(_clean_channel_label(ch.labels))
         if hasattr(ch, 'X') and hasattr(ch, 'Y') and hasattr(ch, 'Z'):
             positions.append([ch.Y, ch.X, ch.Z])
 
@@ -227,7 +242,7 @@ def create_mne_raw_from_loaded(subject_data):
     ch_names  = []
     positions = []
     for ch in chanlocs:
-        ch_names.append(ch.labels)
+        ch_names.append(_clean_channel_label(ch.labels))
         if hasattr(ch, 'X') and hasattr(ch, 'Y') and hasattr(ch, 'Z'):
             positions.append([ch.Y, ch.X, ch.Z])
 
