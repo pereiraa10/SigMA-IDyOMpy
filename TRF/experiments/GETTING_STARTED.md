@@ -1,8 +1,8 @@
 # Getting Started — TRF Experiments
 
-`TRF/experiments/` is a pipeline to train 4 neural encoding model variants on different EEG datasets of participants listening to music. 
+`TRF/experiments/` is a pipeline to train 4 neural encoding model variants on EEG datasets of participants listening to music. 
 Datasets are saved in `/datasets/` folder and contain 3 datasets:
-- [liberi_dataset](https://datadryad.org/dataset/doi:10.5061/dryad.g1jwstqmh): 20 participants listening to midi piano recordings per [Di Liberti 2020](https://elifesciences.org/articles/51784) study
+- (**Primary Dataset**) [liberi_dataset](https://datadryad.org/dataset/doi:10.5061/dryad.g1jwstqmh): 20 participants listening to midi piano recordings per [Di Liberti 2020](https://elifesciences.org/articles/51784) study
 - [MIIR_dataset](https://datadryad.org/dataset/doi:10.5061/dryad.g1jwstqmh): 10 participants listening to music from [Stober 2015](https://ismir2015.uma.es/articles/224_Paper.pdf) study on music imagery 
 - [daly_dataset](https://github.com/OpenNeuroDatasets/ds002725/tree/master): 10 participants listening to classical music from [Daly 2019](https://www.nature.com/articles/s41598-019-45105-2)
 
@@ -95,7 +95,7 @@ Use the different config files to source different datasets.
 
 ```bash
 
-python TRF_sklearn.py --config config_daly.yaml
+python TRF_sklearn.py --config datasets/config_daly.yaml
 ```
 
 #### Running on OpenMIIR (`config_openmiir.yaml`)
@@ -127,9 +127,8 @@ knobs near its top.
 ## Smoke-testing the data pipeline alone (no model fitting)
 
 ```bash
-python dataset.py
+python dataset.py 
 ```
-
-Loads Sub2, builds a `TRFDataset` in both full-trial and fixed-window modes, and asserts
-shapes/dtypes are correct. Good first check after any `config.yaml`/`utils.py` change,
+Loads `viz_smoke_test.py` for a specific subject, trial and channel, configurable at the top of the script (default Sub1, Trial 6, and Channel 10). Script builds a `TRFDataset` in both full-trial and fixed-window modes, and asserts
+shapes/dtypes are correct. Figures are saved to `figures/smoke_test` folder. Good first check after any `config.yaml`/`utils.py` change,
 before running a full model script.

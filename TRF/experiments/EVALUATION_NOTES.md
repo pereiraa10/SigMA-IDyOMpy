@@ -45,7 +45,7 @@ methodological gap worth knowing about.
 - `ReceptiveField.coef_` can be reshaped to the same
   `(n_channels, n_lags, n_features)` TRF-kernel shape as sklearn's.
 
-## `TRF_pickle_A_and_AM.py` — eelbrain `boosting`
+## `TRF_boosting.py` — eelbrain `boosting`
 
 - Uses `eelbrain.boosting(..., partitions=10, test=True)`, which has **its
   own internal train/validate/test partitioning** — not the same mechanism as
@@ -70,7 +70,7 @@ methodological gap worth knowing about.
   `(n_channels, n_lags, n_features)` ndarray without picking a fixed
   predictor ordering.
 
-## `TRF_conv_2_windowed.py` — SGD-trained 1-D conv
+## `TRF_conv.py` — SGD-trained 1-D conv
 
 - No explicit lag matrix; the `CausalPad` + `Conv1d(kernel_size=N_LAGS)`
   gives every output sample the same `[LAG_MIN, LAG_MAX]` receptive field the
