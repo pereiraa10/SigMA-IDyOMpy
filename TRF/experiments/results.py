@@ -492,8 +492,16 @@ def plot_topobutterfly(result, save_dir, sfreq=DEFAULT_SFREQ,
         title += f'  ·  {tag}-locked (n={n_events})'
         suffix += f'_{onset_label}' if onset_label else '_onsetlocked'
     p = eelbrain.plot.TopoButterfly(
-        [nd_true, nd_pred], xlim=(tmin, tmax), w=10, h=4, clip='circle',
-        show=False, title=title)
+        [nd_true, nd_pred], 
+        xlim=(tmin, tmax), 
+        w=12, 
+        h=6, 
+        clip='circle',
+        show=False, 
+        title=title, 
+        xticklabels = 'bottom',
+        yticklabels = 'bottom'
+        )
     fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topobutterfly{suffix}.png"
     p.save(fname)
     p.close()
@@ -529,7 +537,7 @@ def plot_topoarray(result, save_dir, sfreq=DEFAULT_SFREQ,
         title += f'  ·  {tag}-locked (n={n_events})'
         suffix += f'_{onset_label}' if onset_label else '_onsetlocked'
     p = eelbrain.plot.TopoArray(
-        [nd_true, nd_pred], t=times, xlim=(tmin, tmax), w=6, h=4, clip='circle',
+        [nd_true, nd_pred], t=times, xlim=(tmin, tmax), w=12, h=6, clip='circle',
         show=False, title=title)
     fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topoarray{suffix}.png"
     p.save(fname)
