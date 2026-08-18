@@ -74,6 +74,72 @@ _CANDIDATE_MONTAGES = ['biosemi64', 'standard_1020', 'standard_1005']
 _TOPOARRAY_TIME_FRACTIONS = (0.15, 0.5, 0.85)  # fractions of window duration
 
 
+def _reload_raw_eeg_trials(subject):
+    """Reload `subject`'s preprocessed-but-NOT-z-scored EEG trials (pipeline
+    steps 1-6: LPF -> downsample -> HPF -> strip padding, no step-7 z-scoring)
+    straight from disk, for recovering raw-microvolt units in plots.
+
+    The z-scored Y_true/Y_pred saved in the pickle carry no record of the
+    per-trial mean/std that produced them (see module docstring: the schema
+    is intentionally just meta/r/Y_pred/Y_true/weights/...), so there is
+    nothing to invert with from the pickle alone. This re-runs config.yaml's
+    same subject-level load + steps 1-6 (deterministic, not affected by
+    feature_set) to recompute those statistics on demand.
+
+    This is the one deliberate exception to this module's no-pipeline-
+    dependency design (see module docstring) -- only reached when a caller
+    passes raw_units=True, and it requires the same raw EEG on disk (and the
+    same config.yaml) that produced the pickle in the first place.
+    """
+    from config import load_config
+    import utils as pipeline_utils
+    from dataset import PreparedSubject
+
+    config = load_config()
+    eeg_path = config.paths.eeg_dir / config.eeg_filename_pattern.format(subject=subject)
+    eeg_data = pipeline_utils.load_subject_raw_eeg(
+        eeg_path, subject, config.trial_to_stimulus.get(subject))
+    prepared = PreparedSubject(subject, eeg_data, config)
+    return prepared._trials_raw
+
+
+def _invert_zscore(Y, trial_boundaries, subject):
+    """Map a z-scored (T_total, n_channels) array (Y_true or Y_pred) back to
+    raw microvolts, trial by trial: raw = z * std + mean, using each trial's
+    own mean/std recomputed from the un-z-scored EEG (see
+    _reload_raw_eeg_trials). Y_pred is inverted with the SAME per-trial
+    mean/std as Y_true (its own trial's ground-truth statistics), since Y_pred
+    is a prediction of that trial's z-scored EEG, not an independently scaled
+    quantity.
+
+    Note this is a linear transform: it restores physically interpretable
+    units but does not change the relative amplitude gap between Y_pred and
+    Y_true (that gap comes from prediction quality, i.e. r), so a weak model's
+    prediction will still look small next to the actual signal in raw units.
+    """
+    raw_trials = _reload_raw_eeg_trials(subject)
+    if len(raw_trials) != len(trial_boundaries):
+        raise ValueError(
+            f"{subject}: reloaded {len(raw_trials)} raw trials but the "
+            f"pickle has {len(trial_boundaries)} trial_boundaries -- raw EEG "
+            f"on disk (or config.yaml) no longer matches what produced this "
+            f"result. Can't safely invert z-scoring."
+        )
+
+    out = np.empty_like(Y)
+    for (start, end), raw_t in zip(trial_boundaries, raw_trials):
+        eeg = raw_t['eeg']
+        if eeg.shape[0] != end - start:
+            raise ValueError(
+                f"{subject}: raw trial length {eeg.shape[0]} != pickled "
+                f"trial length {end - start} for boundary ({start}, {end}). "
+                f"Can't safely invert z-scoring."
+            )
+        mean, std = eeg.mean(axis=0), eeg.std(axis=0)
+        out[start:end] = Y[start:end] * std + mean
+    return out
+
+
 def result_filename(save_dir, subject, model_family, feature_set, variant=None):
     model_tag = model_family if variant is None else f'{model_family}_{variant}'
     return save_dir / f'{subject}__{model_tag}__{feature_set}.pkl'
@@ -185,10 +251,16 @@ def build_result(*, subject, subject_type, feature_set, feature_keys, model_fami
     }
 
 
-def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFAULT_SFREQ):
+def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFAULT_SFREQ,
+                    raw_units=False):
     """Predicted-vs-actual EEG alignment plot, built entirely from a `result`
     dict (see build_result). Skipped when the result has no Y_true/Y_pred
-    (the eelbrain.boosting exception, see build_result's docstring)."""
+    (the eelbrain.boosting exception, see build_result's docstring).
+
+    raw_units : if True, invert the per-trial z-scoring (see
+        _invert_zscore) so both traces are plotted in raw microvolts instead
+        of z-score units. Requires the original raw EEG + config.yaml to
+        still be reachable on disk (see _reload_raw_eeg_trials)."""
     Y_true, Y_pred = result['Y_true'], result['Y_pred']
     if Y_true is None or Y_pred is None:
         return
@@ -198,6 +270,14 @@ def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFA
     model_tag = meta['model_family']
     if meta.get('model_variant'):
         model_tag = f"{model_tag}_{meta['model_variant']}"
+
+    if raw_units:
+        trial_boundaries = meta['trial_boundaries']
+        Y_true = _invert_zscore(Y_true, trial_boundaries, subject)
+        Y_pred = _invert_zscore(Y_pred, trial_boundaries, subject)
+        unit_label, actual_label = 'μV', 'Actual EEG (raw μV)'
+    else:
+        unit_label, actual_label = 'z-score', 'Actual EEG (z-scored)'
 
     r_vals = result['r_per_channel']
     ch = channel_idx if channel_idx < Y_true.shape[1] else 0
@@ -211,11 +291,11 @@ def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFA
         fontsize=12, fontweight='bold')
 
     axes[0].plot(t_plot, Y_true[:n_plot, ch],
-                 color='black', lw=0.7, label='Actual EEG (z-scored)')
+                 color='black', lw=0.7, label=actual_label)
     axes[0].plot(t_plot, Y_pred[:n_plot, ch],
                  color='seagreen', lw=0.9, alpha=0.85,
                  label=f'Predicted EEG  (r = {r_vals[ch]:.3f})')
-    axes[0].set_ylabel('z-score')
+    axes[0].set_ylabel(unit_label)
     axes[0].set_title(f'Actual vs Predicted EEG  ({model_tag})')
     axes[0].legend(fontsize=9)
     axes[0].grid(True, alpha=0.3)
@@ -223,14 +303,15 @@ def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFA
     axes[1].plot(t_plot, Y_true[:n_plot, ch] - Y_pred[:n_plot, ch],
                  color='darkorange', lw=0.7, label='Residual (actual - predicted)')
     axes[1].axhline(0, color='black', lw=0.6, linestyle='--')
-    axes[1].set_ylabel('z-score')
+    axes[1].set_ylabel(unit_label)
     axes[1].set_xlabel('Time (s)')
     axes[1].set_title('Residual: Actual - Predicted')
     axes[1].legend(fontsize=9)
     axes[1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_alignment_ch{ch}.png"
+    suffix = '_raw' if raw_units else ''
+    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_alignment_ch{ch}{suffix}.png"
     plt.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fname
@@ -255,7 +336,7 @@ def _build_sensor(channel_names):
     )
 
 
-def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
+def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
     """Y_true/Y_pred for every trial, as a pair of (case, sensor, time)
     NDVars -- one Case per trial, not pre-averaged. eelbrain.plot.TopoButterfly
     / TopoArray average over the Case dimension themselves when rendering, so
@@ -274,6 +355,10 @@ def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
     are passed to the plot functions' `xlim` so the displayed time axis
     still reads in the -100 ms .. +600 ms convention.
 
+    raw_units : if True, invert the per-trial z-scoring (over the FULL trial,
+        before truncation below) so the NDVars carry raw microvolts instead
+        of z-score units -- see _invert_zscore.
+
     Returns None (skip) under the same condition plot_alignment skips under
     -- no Y_true/Y_pred (the eelbrain.boosting exception) -- or if
     trial_boundaries wasn't saved.
@@ -289,6 +374,10 @@ def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
     model_tag = meta['model_family']
     if meta.get('model_variant'):
         model_tag = f"{model_tag}_{meta['model_variant']}"
+
+    if raw_units:
+        Y_true = _invert_zscore(Y_true, trial_boundaries, meta['subject'])
+        Y_pred = _invert_zscore(Y_pred, trial_boundaries, meta['subject'])
 
     n_window = min(
         round((tmax - tmin) * sfreq),
@@ -307,47 +396,55 @@ def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
 
 
 def plot_topobutterfly(result, save_dir, sfreq=DEFAULT_SFREQ,
-                        tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
+                        tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
     """Actual-vs-predicted ERP as an eelbrain TopoButterfly: all channels
     overlaid, plus a scalp topomap. Feeds every trial's Y_true/Y_pred to
     TopoButterfly directly (as a Case dimension) and lets it average over
     trials and pick the topomap time itself -- no manual averaging or
     peak-time computation here. tmin/tmax set the displayed window
-    (xlim), matching this project's TRF receptive-field convention."""
-    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax)
+    (xlim), matching this project's TRF receptive-field convention.
+
+    raw_units : if True, plot raw microvolts instead of z-score units -- see
+        _invert_zscore / _build_case_ndvars."""
+    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units)
     if built is None:
         return
     nd_true, nd_pred, meta, model_tag = built
     subject, feature_set = meta['subject'], meta['feature_set']
 
-    title = f'{subject}  ·  {model_tag}  ·  {feature_set}'
+    title = f'{subject}  ·  {model_tag}  ·  {feature_set}' + ('  ·  raw μV' if raw_units else '')
     p = eelbrain.plot.TopoButterfly(
         [nd_true, nd_pred], xlim=(tmin, tmax), w=10, h=4, clip='circle',
         show=False, title=title)
-    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topobutterfly.png"
+    suffix = '_raw' if raw_units else ''
+    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topobutterfly{suffix}.png"
     p.save(fname)
     p.close()
     return fname
 
 
 def plot_topoarray(result, save_dir, sfreq=DEFAULT_SFREQ,
-                    tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX):
+                    tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
     """Actual-vs-predicted ERP as an eelbrain TopoArray: scalp topomaps at a
     few representative times spread across the tmin/tmax window. Feeds every
     trial's Y_true/Y_pred to TopoArray directly (as a Case dimension) and
-    lets it average over trials -- no manual averaging here."""
-    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax)
+    lets it average over trials -- no manual averaging here.
+
+    raw_units : if True, plot raw microvolts instead of z-score units -- see
+        _invert_zscore / _build_case_ndvars."""
+    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units)
     if built is None:
         return
     nd_true, nd_pred, meta, model_tag = built
     subject, feature_set = meta['subject'], meta['feature_set']
 
     times = [tmin + f * (tmax - tmin) for f in _TOPOARRAY_TIME_FRACTIONS]
-    title = f'{subject}  ·  {model_tag}  ·  {feature_set}'
+    title = f'{subject}  ·  {model_tag}  ·  {feature_set}' + ('  ·  raw μV' if raw_units else '')
     p = eelbrain.plot.TopoArray(
         [nd_true, nd_pred], t=times, xlim=(tmin, tmax), w=6, h=4, clip='circle',
         show=False, title=title)
-    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topoarray.png"
+    suffix = '_raw' if raw_units else ''
+    fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topoarray{suffix}.png"
     p.save(fname)
     p.close()
     return fname
