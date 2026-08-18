@@ -9,6 +9,7 @@ OLDcodeForPaper-IDyOMpy-/benchmark_results
 *__pycache__
 TRF/__pycache__
 TRF/.venv
+TRF/.claude
 TRF/liberi_dataset
 TRF/archive
 TRF/pickles/
