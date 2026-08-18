@@ -252,7 +252,7 @@ def build_result(*, subject, subject_type, feature_set, feature_keys, model_fami
 
 
 def plot_alignment(result, save_dir, channel_idx=DEFAULT_CHANNEL_IDX, sfreq=DEFAULT_SFREQ,
-                    raw_units=False):
+                    raw_units=True):
     """Predicted-vs-actual EEG alignment plot, built entirely from a `result`
     dict (see build_result). Skipped when the result has no Y_true/Y_pred
     (the eelbrain.boosting exception, see build_result's docstring).
@@ -336,32 +336,53 @@ def _build_sensor(channel_names):
     )
 
 
-def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
+def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=True,
+                        onsets=None):
     """Y_true/Y_pred for every trial, as a pair of (case, sensor, time)
-    NDVars -- one Case per trial, not pre-averaged. eelbrain.plot.TopoButterfly
-    / TopoArray average over the Case dimension themselves when rendering, so
-    no manual averaging happens here.
+    NDVars, not pre-averaged. eelbrain.plot.TopoButterfly / TopoArray average
+    over the Case dimension themselves when rendering, so no manual averaging
+    happens here.
 
-    Each trial is truncated to its first (tmax - tmin) seconds (700 ms by
-    default, matching this project's TRF tmin/tmax receptive-field
-    convention) so every trial contributes a NDVar of the same length; every
-    trial in this dataset is far longer than that, so this never runs past a
-    trial's end. Windows start at 0 (trial/stimulus onset), not tmin: the
-    saved Y_true/Y_pred arrays only cover each trial's own span (see
-    build_trials), so there's no genuine pre-stimulus baseline to slice for
-    tmin < 0 -- indices before a trial's start in the concatenated array
-    belong to a different trial (or don't exist, for the first trial).
-    (tmax - tmin) is used purely as the window *length*; tmin/tmax themselves
-    are passed to the plot functions' `xlim` so the displayed time axis
-    still reads in the -100 ms .. +600 ms convention.
+    Two slicing modes, selected by `onsets`:
+
+    onsets=None (default) -- one Case per trial. Each trial is truncated to
+        its first (tmax - tmin) seconds (700 ms by default, matching this
+        project's TRF tmin/tmax receptive-field convention) so every trial
+        contributes a NDVar of the same length; every trial in this dataset
+        is far longer than that, so this never runs past a trial's end.
+        Windows start at 0 (trial/stimulus onset), not tmin: the saved
+        Y_true/Y_pred arrays only cover each trial's own span (see
+        build_trials), so there's no genuine pre-stimulus baseline to slice
+        for tmin < 0 -- indices before a trial's start in the concatenated
+        array belong to a different trial (or don't exist, for the first
+        trial). (tmax - tmin) is used purely as the window *length*;
+        tmin/tmax themselves are passed to the plot functions' `xlim` so the
+        displayed time axis still reads in the -100 ms .. +600 ms convention.
+
+    onsets=list[array-like] (len == n_trials) -- one Case per onset EVENT,
+        pooled across all trials, for a genuine onset-locked grand-average
+        ERP. onsets[i] is a 1-D array of sample indices (relative to trial
+        i's own start, at `sfreq`) marking each onset event to lock a window
+        to -- e.g. `np.flatnonzero(trial['onset_surprisal'])` for the sparse
+        IDyOM-onset impulses, or a peak-picked/thresholded index list derived
+        from the continuous acoustic `trial['onsets']` envelope-derivative
+        signal. Each window is [onset + tmin*sfreq, onset + tmin*sfreq +
+        (tmax-tmin)*sfreq) samples, so it DOES include genuine pre-onset
+        samples (unlike the trial-start mode above). Events whose window
+        would fall outside their trial's bounds are dropped rather than
+        clipped, so every Case has the identical, real tmin..tmax span. The
+        time axis is anchored at tmin (not 0), since t=0 now means the actual
+        onset for every Case.
 
     raw_units : if True, invert the per-trial z-scoring (over the FULL trial,
-        before truncation below) so the NDVars carry raw microvolts instead
-        of z-score units -- see _invert_zscore.
+        before either windowing mode above) so the NDVars carry raw
+        microvolts instead of z-score units -- see _invert_zscore.
 
     Returns None (skip) under the same condition plot_alignment skips under
     -- no Y_true/Y_pred (the eelbrain.boosting exception) -- or if
-    trial_boundaries wasn't saved.
+    trial_boundaries wasn't saved. Raises ValueError if `onsets` doesn't
+    have one entry per trial, or if no onset event's window fits inside its
+    trial's bounds.
 
     Returns (nd_true, nd_pred, meta, model_tag).
     """
@@ -379,16 +400,54 @@ def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_
         Y_true = _invert_zscore(Y_true, trial_boundaries, meta['subject'])
         Y_pred = _invert_zscore(Y_pred, trial_boundaries, meta['subject'])
 
-    n_window = min(
-        round((tmax - tmin) * sfreq),
-        min(end - start for start, end in trial_boundaries))
     sensor = _build_sensor(meta['channel_names'])
-    time_axis = eelbrain.UTS(0, 1 / sfreq, n_window)
 
-    def case_ndvar(Y, name):
-        arrs = np.stack([Y[start:start + n_window] for start, _ in trial_boundaries])
-        return eelbrain.NDVar(
-            arrs.transpose(0, 2, 1), (eelbrain.Case, sensor, time_axis), name=name)
+    if onsets is None:
+        n_window = min(
+            round((tmax - tmin) * sfreq),
+            min(end - start for start, end in trial_boundaries))
+        time_axis = eelbrain.UTS(0, 1 / sfreq, n_window)
+
+        def case_ndvar(Y, name):
+            arrs = np.stack([Y[start:start + n_window] for start, _ in trial_boundaries])
+            return eelbrain.NDVar(
+                arrs.transpose(0, 2, 1), (eelbrain.Case, sensor, time_axis), name=name)
+    else:
+        if len(onsets) != len(trial_boundaries):
+            raise ValueError(
+                f"onsets has {len(onsets)} entries but result has "
+                f"{len(trial_boundaries)} trials -- need exactly one "
+                f"per-trial onset-index array (empty is fine for a trial "
+                f"with no events)."
+            )
+        n_window = round((tmax - tmin) * sfreq)
+        pre_samples = round(-tmin * sfreq)
+        time_axis = eelbrain.UTS(tmin, 1 / sfreq, n_window)
+
+        # Window bounds (in trial-local samples) don't depend on Y_true vs
+        # Y_pred, so compute them once and reuse for both.
+        windows = []  # list of (start, end) into the concatenated Y arrays
+        for (t_start, t_end), trial_onsets in zip(trial_boundaries, onsets):
+            trial_len = t_end - t_start
+            for on in trial_onsets:
+                w_start = int(on) - pre_samples
+                w_end = w_start + n_window
+                if w_start < 0 or w_end > trial_len:
+                    continue
+                windows.append((t_start + w_start, t_start + w_end))
+        if not windows:
+            raise ValueError(
+                "No onset-locked window fit inside its trial's bounds for "
+                f"tmin={tmin}, tmax={tmax} -- check that `onsets` indices "
+                "are trial-local sample positions at the same sfreq as the "
+                "result, and that events aren't all too close to a trial "
+                "edge for this window."
+            )
+
+        def case_ndvar(Y, name):
+            arrs = np.stack([Y[start:end] for start, end in windows])
+            return eelbrain.NDVar(
+                arrs.transpose(0, 2, 1), (eelbrain.Case, sensor, time_axis), name=name)
 
     nd_true = case_ndvar(Y_true, 'Actual')
     nd_pred = case_ndvar(Y_pred, 'Predicted')
@@ -396,27 +455,45 @@ def _build_case_ndvars(result, sfreq, tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_
 
 
 def plot_topobutterfly(result, save_dir, sfreq=DEFAULT_SFREQ,
-                        tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
+                        tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False,
+                        onsets=None, onset_label=None):
     """Actual-vs-predicted ERP as an eelbrain TopoButterfly: all channels
-    overlaid, plus a scalp topomap. Feeds every trial's Y_true/Y_pred to
-    TopoButterfly directly (as a Case dimension) and lets it average over
-    trials and pick the topomap time itself -- no manual averaging or
-    peak-time computation here. tmin/tmax set the displayed window
-    (xlim), matching this project's TRF receptive-field convention.
+    overlaid, plus a scalp topomap. Feeds Y_true/Y_pred to TopoButterfly
+    directly (as a Case dimension) and lets it average over Cases and pick
+    the topomap time itself -- no manual averaging or peak-time computation
+    here. tmin/tmax set the displayed window (xlim), matching this project's
+    TRF receptive-field convention.
+
+    onsets : optional list (len == n_trials) of per-trial onset sample-index
+        arrays. When given, the grand average is locked to each onset EVENT
+        (pooled across all trials) instead of one Case per trial-start --
+        see _build_case_ndvars for the exact windowing rule. Use this to
+        compare, e.g., acoustic-onset-locked vs IDyOM-onset-surprisal-locked
+        grand averages against each other.
+    onset_label : optional str tag (e.g. 'onset_surprisal') describing the
+        onset source in `onsets`, folded into the title/filename so runs
+        with different onset sources don't overwrite each other. Ignored if
+        onsets is None.
 
     raw_units : if True, plot raw microvolts instead of z-score units -- see
         _invert_zscore / _build_case_ndvars."""
-    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units)
+    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units,
+                                onsets=onsets)
     if built is None:
         return
     nd_true, nd_pred, meta, model_tag = built
     subject, feature_set = meta['subject'], meta['feature_set']
 
     title = f'{subject}  ·  {model_tag}  ·  {feature_set}' + ('  ·  raw μV' if raw_units else '')
+    suffix = '_raw' if raw_units else ''
+    if onsets is not None:
+        n_events = nd_true.shape[0]
+        tag = onset_label or 'onset-locked'
+        title += f'  ·  {tag}-locked (n={n_events})'
+        suffix += f'_{onset_label}' if onset_label else '_onsetlocked'
     p = eelbrain.plot.TopoButterfly(
         [nd_true, nd_pred], xlim=(tmin, tmax), w=10, h=4, clip='circle',
         show=False, title=title)
-    suffix = '_raw' if raw_units else ''
     fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topobutterfly{suffix}.png"
     p.save(fname)
     p.close()
@@ -424,15 +501,20 @@ def plot_topobutterfly(result, save_dir, sfreq=DEFAULT_SFREQ,
 
 
 def plot_topoarray(result, save_dir, sfreq=DEFAULT_SFREQ,
-                    tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=False):
+                    tmin=DEFAULT_TMIN, tmax=DEFAULT_TMAX, raw_units=True,
+                    onsets=None, onset_label=None):
     """Actual-vs-predicted ERP as an eelbrain TopoArray: scalp topomaps at a
-    few representative times spread across the tmin/tmax window. Feeds every
-    trial's Y_true/Y_pred to TopoArray directly (as a Case dimension) and
-    lets it average over trials -- no manual averaging here.
+    few representative times spread across the tmin/tmax window. Feeds
+    Y_true/Y_pred to TopoArray directly (as a Case dimension) and lets it
+    average over Cases -- no manual averaging here.
+
+    onsets, onset_label : see plot_topobutterfly -- same onset-locked
+        grand-average mode, forwarded to _build_case_ndvars unchanged.
 
     raw_units : if True, plot raw microvolts instead of z-score units -- see
         _invert_zscore / _build_case_ndvars."""
-    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units)
+    built = _build_case_ndvars(result, sfreq, tmin=tmin, tmax=tmax, raw_units=raw_units,
+                                onsets=onsets)
     if built is None:
         return
     nd_true, nd_pred, meta, model_tag = built
@@ -440,10 +522,15 @@ def plot_topoarray(result, save_dir, sfreq=DEFAULT_SFREQ,
 
     times = [tmin + f * (tmax - tmin) for f in _TOPOARRAY_TIME_FRACTIONS]
     title = f'{subject}  ·  {model_tag}  ·  {feature_set}' + ('  ·  raw μV' if raw_units else '')
+    suffix = '_raw' if raw_units else ''
+    if onsets is not None:
+        n_events = nd_true.shape[0]
+        tag = onset_label or 'onset-locked'
+        title += f'  ·  {tag}-locked (n={n_events})'
+        suffix += f'_{onset_label}' if onset_label else '_onsetlocked'
     p = eelbrain.plot.TopoArray(
         [nd_true, nd_pred], t=times, xlim=(tmin, tmax), w=6, h=4, clip='circle',
         show=False, title=title)
-    suffix = '_raw' if raw_units else ''
     fname = save_dir / f"{subject}_{feature_set}_{model_tag}_topoarray{suffix}.png"
     p.save(fname)
     p.close()
