@@ -22,4 +22,5 @@ TRF/experiments/.vscode
 TRF/experiments/datasets
 TRF/experiments/results/
 TRF/experiments/figures/
+TRF/experiments/generalization_holdout/
 NRT/pickles*
