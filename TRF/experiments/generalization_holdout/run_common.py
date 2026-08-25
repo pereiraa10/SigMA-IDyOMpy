@@ -108,7 +108,8 @@ def shrink_fold_for_smoke_test(fold, max_per_subject=2, max_test_subjects=2,
 def run_fold(fold, config, cache, feature_sets, variants, base_results_dir,
              window_samples=WINDOW_SAMPLES, hop_samples=HOP_SAMPLES,
              window_dataset_cls=MultiSubjectWindowDataset, make_window_dataset_cls=None,
-             model_family='conv', extra_meta_base=None, plot=True, debug=False, **train_kwargs):
+             model_family='conv', extra_meta_base=None, plot=True, debug=False,
+             compute_null_stats=None, **train_kwargs):
     """Train + evaluate + save pickles for one Fold, across every
     (feature_set, variant) combination. Returns list of saved paths.
 
@@ -118,6 +119,15 @@ def run_fold(fold, config, cache, feature_sets, variants, base_results_dir,
         Used by null_baseline_mismatched_stimulus.py to build a
         feature_set-specific mismatched-pairing table and hand back a bound
         MismatchedMultiSubjectWindowDataset without duplicating this loop.
+
+    compute_null_stats : optional callable(model, ds_by_subject, feature_keys,
+        test_subject, subj_test_keys, Y_true, Y_pred, trial_boundaries,
+        channel_names, fold, feature_set, variant) -> dict, called once per
+        (feature_set, variant, test_subject) right after evaluate_full_trials,
+        with the result merged into that result's extra_meta (and therefore
+        into the saved pickle's meta dict). Used by
+        null_baseline_mismatched_stimulus.py to attach a permutation-style
+        null r distribution to each result without retraining the model.
     """
     out_dir = fold_dir(fold, base_results_dir)
     log_fold_manifest(fold, out_path=out_dir / f'{fold.paradigm}_fold{fold.fold_idx}_manifest.txt')
@@ -161,6 +171,15 @@ def run_fold(fold, config, cache, feature_sets, variants, base_results_dir,
                 if extra_meta_base:
                     extra_meta.update(extra_meta_base)
 
+                if compute_null_stats is not None:
+                    null_meta = compute_null_stats(
+                        model=model, ds_by_subject=ds_by_subject, feature_keys=feature_keys,
+                        test_subject=test_subject, subj_test_keys=subj_test_keys,
+                        Y_true=Y_true, Y_pred=Y_pred, trial_boundaries=trial_boundaries,
+                        channel_names=ds_by_subject[test_subject].channel_names,
+                        fold=fold, feature_set=feature_set, variant=variant)
+                    extra_meta.update(null_meta)
+
                 result = res.build_result(
                     subject=test_subject, subject_type=config.subject_type[test_subject],
                     feature_set=feature_set, feature_keys=feature_keys, model_family=model_family,
@@ -178,7 +197,7 @@ def run_fold(fold, config, cache, feature_sets, variants, base_results_dir,
 
 def run_all_folds(paradigm_name, folds, config, cache, args, model_family='conv',
                    extra_meta_base=None, window_dataset_cls=MultiSubjectWindowDataset,
-                   make_window_dataset_cls=None):
+                   make_window_dataset_cls=None, compute_null_stats=None):
     """Shared driver for a run_paradigmN_*.py __main__ block: applies
     --smoke-test/--fold/--feature-sets/--variants/--epochs/--patience/
     --batch-size, then calls run_fold for each selected fold."""
@@ -215,6 +234,7 @@ def run_all_folds(paradigm_name, folds, config, cache, args, model_family='conv'
             fold, config, cache, feature_sets, variants, base_results_dir,
             model_family=model_family, extra_meta_base=extra_meta_base,
             window_dataset_cls=window_dataset_cls, make_window_dataset_cls=make_window_dataset_cls,
+            compute_null_stats=compute_null_stats,
             plot=not args.no_plots, debug=args.smoke_test,
             **train_kwargs)
         all_saved += saved
