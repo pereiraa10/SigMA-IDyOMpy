@@ -1,28 +1,36 @@
+*.DS_Store
+*__pycache__
 
 codeForPaper-IDyOMpy-/
 codeForPaper-IDyOMpy-/benchmark_results
 
+NRT/pickles*
+
 OLDcodeForPaper-IDyOMpy-/
 OLDcodeForPaper-IDyOMpy-/benchmark_results
 
-*.DS_Store
-*__pycache__
+recreating Fig 4A.xlsx/
+
+topo graphs/
+
 TRF/__pycache__
 TRF/.venv
 TRF/.claude
-TRF/liberi_dataset
 TRF/archive
-TRF/pickles/
 TRF/audio-brain-decoding/
 TRF/CNSP-resources/
-TRF/TRF_diagnostics_output/
-TRF/TRF_offset_diagnostic_output/
-topo graphs/
-recreating Fig 4A.xlsx/
+
 TRF/experiments/.venv
 TRF/experiments/.vscode
 TRF/experiments/datasets
-TRF/experiments/results/
 TRF/experiments/figures/
 TRF/experiments/generalization_holdout/results
-NRT/pickles*
+TRF/experiments/padding_fix
+TRF/experiments/results/
+
+TRF/liberi_dataset
+TRF/pickles/
+TRF/TRF_diagnostics_output/
+TRF/TRF_offset_diagnostic_output/
+
+
