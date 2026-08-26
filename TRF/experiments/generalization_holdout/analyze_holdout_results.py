@@ -61,6 +61,14 @@ def combine_holdout_results(results_dir=None, models=None):  #changed from BASE_
 
         r_per_channel = np.asarray(result['r_per_channel'])
         channel_names = meta.get('channel_names') or list(range(len(r_per_channel)))
+        # null_baseline_mismatched_stimulus.py's per-draw permutation null
+        # (see make_compute_null_stats): mean/SD of the empirical null r
+        # distribution per channel, plus the real r's z-score/percentile
+        # against it. None for every non-null-baseline result.
+        null_mean = meta.get('null_r_distribution_mean')
+        null_std = meta.get('null_r_distribution_std')
+        null_z = meta.get('null_z_score')
+        null_pct = meta.get('null_percentile')
         for ch_idx, (ch_name, r) in enumerate(zip(channel_names, r_per_channel)):
             rows.append({
                 'subject': meta['subject'],
@@ -73,6 +81,10 @@ def combine_holdout_results(results_dir=None, models=None):  #changed from BASE_
                 'channel_idx': ch_idx,
                 'r': r,
                 'null_baseline': meta.get('null_baseline', False),
+                'null_r_mean': null_mean[ch_idx] if null_mean is not None else None,
+                'null_r_std': null_std[ch_idx] if null_std is not None else None,
+                'null_z_score': null_z[ch_idx] if null_z is not None else None,
+                'null_percentile': null_pct[ch_idx] if null_pct is not None else None,
                 'file_path': str(path),
             })
         del result
